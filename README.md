@@ -1,8 +1,8 @@
 # HTML Preview (tern-html-preview)
 
-Render `.html`/`.htm`/`.xhtml` files in a Tern block as **native Markdown**
-via [pandoc](https://pandoc.org). No browser block, no HTTP server, no
-hand-written parser.
+Render `.html`/`.htm`/`.xhtml` files as a **real web page in a Tern browser
+block** — full HTML, JavaScript and WebGL (3D), not a markdown or structural
+view.
 
 ## Install
 
@@ -14,38 +14,34 @@ tern plugin link /tmp/tern-html-preview
 
 ## Use
 
-Right-click an `.html` (or `.htm`/`.xhtml`) file in the Files pane and pick
-**Open with › HTML Preview**. The block converts the file with pandoc and
-renders it with Tern's native `md` kind (headings, tables, lists, code,
-links, images).
-
-## How it works
-
-- `host.luau` reads the file on its own host and runs
-  `pandoc -f html -t markdown --wrap=none <path>` via `tern.process.run`.
-- The output is drawn with `ui.md` — Tern's native Markdown renderer.
-- Because the host half does the conversion, a **remote** file is converted
-  on its own host (remote works when pandoc is installed there).
+Right-click an `.html` (or `.htm`/`.xhtml`) file and pick **Open with ›
+HTML Preview**. The block serves the file's directory over a local HTTP
+server (`127.0.0.1:8642`) and opens it in a browser block, which WebKit
+renders (scripts/WebGL included).
 
 ## Requires
 
-- **pandoc** on the machine that hosts the file (the host half runs it).
-  `brew install pandoc` on macOS. Not on PATH → you'll see a `pandoc failed`
-  error view.
+- **python3** (for `python3 -m http.server`).
+- Port **8642** free (change `PORT` in `host.luau` if it isn't).
+
+## How it works
+
+- `host.luau` starts `python3 -m http.server <port> --bind 127.0.0.1
+  --directory <dir>` and calls `cx:open("http://127.0.0.1:<port>/<file>")`.
+- A `data:` URL did **not** route to a browser block (`cx:open` from a
+  handler isn't routed), so a served `http://` URL is what reliably opens a
+  browser block, which renders the page and runs its JavaScript/WebGL.
 
 ## Known limits
 
-- Rendering fidelity is **Markdown's**, not a full browser's: complex
-  layout, inline CSS and scripts are not reproduced.
-- A very large file's `md` view may be heavy; pandoc itself is fast.
+- **Local files only, cleanly.** The server runs on the machine that opens
+  it. For a **remote** file, the server must run on that remote host (and the
+  browser block loads the remote host's `http://` URL, port permitting).
+- The server runs while the block is open; close the pane to stop it (best
+  effort — there is no block “closed” handler).
+- Serving exposes the file's **directory** on localhost, briefly.
 
 ## Remote hosts
 
-The block runs on the file's host (host half), so **remote files need the
-plugin AND pandoc installed on that remote host**:
-
-```sh
-# in a pane on the remote host:
-tern plugin install github.com/y9c/tern-html-preview
-# and ensure pandoc is there
-```
+Install the plugin and ensure `python3` is on the **remote host** too; the
+host half serves the file there and the browser block loads its URL.

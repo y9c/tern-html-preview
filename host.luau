@@ -1,64 +1,87 @@
 --!strict
--- Render an HTML file as native Tern Markdown, via pandoc.
+-- Render an HTML file as a real web page in a Tern browser block.
 --
--- The host half reads the file on its own host (remote files work when
--- pandoc is on that host) and converts HTML → Markdown; the block renders it
--- with Tern's native `md` kind. No browser block, no HTTP server, no
--- hand-written parser. Pandoc is robust for arbitrary/well-formed HTML.
+-- A browser block (WebView) is the only way to get full HTML + JS + 3D.
+-- It loads a URL; a `data:` URL did not route there, so we serve the file's
+-- directory over a local HTTP server (127.0.0.1) and open http://… in the
+-- browser block, which WebKit then renders (scripts, WebGL included).
 
 local ui = tern.ui
+local fs = tern.fs
+
+local PORT = 8642 -- fixed; change if your env occupies it
 
 type State = {
 	path: string,
-	markdown: string?,
-	converting: boolean,
+	dir: string,
+	name: string,
+	serving: boolean,
 	err: string?,
+	serverPid: number?,
 }
 
 local block = {
 	init = function(cx, args, _saved)
 		local path = args[1] or ""
-		local state: State = { path = path, markdown = nil, converting = false, err = nil }
-		if path == "" then
+		local dir, name = path:match("^(.*)/([^/]+)$")
+		local state: State = {
+			path = path,
+			dir = dir or ".",
+			name = name or path,
+			serving = true,
+			err = nil,
+			serverPid = nil,
+		}
+		if path == "" or not name then
 			state.err = "HTML Preview: no file given"
+			state.serving = false
+			return state
+		end
+		if not fs.exists(path) then
+			state.err = "HTML Preview: no such file " .. path
+			state.serving = false
 			return state
 		end
 
-		state.converting = true
-		tern.process.run(
-			{ "pandoc", "-f", "html", "-t", "markdown", "--wrap=none", path },
-			{ cwd = cx.cwd, timeout_ms = 30000 },
-			function(r)
-				if r.status == 0 then
-					state.markdown = r.stdout or ""
-					state.err = nil
-				else
-					local detail = (r.stderr or ""):gsub("%s+", " "):sub(1, 160)
-					state.err = "HTML Preview: pandoc failed (" .. tostring(r.status) .. ")" ..
-						(if #detail > 0 then " " .. detail else "")
+		-- Serve the file's directory on localhost, then open the URL in a
+		-- browser block. The server must stay up while the page is viewed.
+		local ok, err = pcall(function()
+			tern.process.run(
+				{ "python3", "-m", "http.server", tostring(PORT), "--bind", "127.0.0.1", "--directory", state.dir },
+				{ cwd = state.dir, timeout_ms = 0 },
+				function(r)
+					-- Long-running server: a nonzero exit means it stopped.
+					if cx ~= nil then
+						cx:toast("warning", "HTML Preview server stopped", tostring(r.status))
+					end
 				end
-				state.converting = false
-				cx:render()
-			end
-		)
+			)
+		end)
+		if not ok then
+			state.err = "HTML Preview: could not start server (" .. tostring(err) .. ")"
+			state.serving = false
+		end
+
+		-- Open the served URL in a browser block.
+		local url = "http://127.0.0.1:" .. tostring(PORT) .. "/" .. state.name
+		cx:open(url)
 		return state
 	end,
 
 	title = function(state)
-		return "HTML: " .. state.path
+		return "HTML: " .. state.name
 	end,
 
 	view = function(state, _cx)
 		if state.err then
 			return { main = ui.col({ ui.text({ ui.span(state.err, "error") }) }) }
 		end
-		if state.converting or state.markdown == nil then
-			return { main = ui.col({ ui.text({ ui.span("Converting HTML → Markdown…", "muted") }) }) }
-		end
-		if state.markdown == "" then
-			return { main = ui.col({ ui.text({ ui.span("(no text content)", "muted") }) }) }
-		end
-		return { main = ui.col({ ui.md(state.markdown) }) }
+		return {
+			main = ui.col({
+				ui.text({ ui.span("Served " .. state.name .. " at http://127.0.0.1:" .. tostring(PORT), "success") }),
+				ui.text({ ui.span("Close this pane when done; the local server stops with it.", "muted") }),
+			}),
+		}
 	end,
 }
 
