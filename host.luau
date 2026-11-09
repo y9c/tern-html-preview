@@ -25,10 +25,12 @@ local function base64(s: string): string
 		local b1 = string.byte(s, i)
 		local b2 = string.byte(s, i + 1) or 0
 		local b3 = string.byte(s, i + 2) or 0
-		local c1 = (b1 >> 2) + 1
-		local c2 = (((b1 & 3) << 4) | (b2 >> 4)) + 1
-		local c3 = (((b2 & 15) << 2) | (b3 >> 6)) + 1
-		local c4 = (b3 & 63) + 1
+		-- 6-bit groups via integer division and modulo (no bitwise ops,
+		-- which some Luau builds reject).
+		local c1 = (b1 // 4) + 1
+		local c2 = ((b1 % 4) * 16 + b2 // 16) + 1
+		local c3 = ((b2 % 16) * 4 + b3 // 64) + 1
+		local c4 = (b3 % 64) + 1
 		local part = B64:sub(c1, c1) .. B64:sub(c2, c2)
 		part = part .. (if i + 1 <= len then B64:sub(c3, c3) else "=")
 		part = part .. (if i + 2 <= len then B64:sub(c4, c4) else "=")
