@@ -2,12 +2,5 @@ schema = 1
 id = "htmlpreview"
 name = "HTML Preview"
 version = "0.1.0"
-description = "Render .html/.htm files in a Tern browser block."
-host = "host.luau"
-
-# Takes over "Open with" for HTML files; not a palette block (needs a file).
-[[blocks]]
-id = "render"
-title = "HTML Preview"
-files = ["*.html", "*.htm", "*.xhtml"]
-palette = false
+description = "Render .html/.htm files in a Tern browser block via a temporary local server."
+window = "window.luau"
