@@ -42,8 +42,18 @@ type N = {
 local function parse(body: string): { N }
 	local roots: { N } = {}
 	local stack: { N } = {}
+	local count = 0
+	local stopped = false
 
 	local function push(node: N)
+		if stopped then
+			return
+		end
+		count = count + 1
+		if count > MAX_NODES then
+			stopped = true
+			return
+		end
 		if #stack > 0 then
 			stack[#stack].children[#stack[#stack].children + 1] = node
 		else
@@ -100,8 +110,11 @@ local function parse(body: string): { N }
 				end
 			end
 		end
+		if stopped then
+			break
+		end
 	end
-	return roots
+	return roots, stopped
 end
 
 -- Convert a parsed node to an `el`/`text` node.
@@ -116,9 +129,10 @@ local function toEl(node: N): any
 	return ui.el(node.tag, {}, children)
 end
 
-local MAX_BYTES = 2 * 1024 * 1024
+local MAX_BYTES = 4 * 1024 * 1024
+local MAX_NODES = 15000
 
-type State = { path: string, nodes: { N }?, err: string? }
+type State = { path: string, nodes: { N }?, err: string?, truncated: boolean? }
 
 local block = {
 	init = function(cx, args, _saved)
@@ -132,11 +146,12 @@ local block = {
 			if not ok then
 				state.err = "HTML Preview: could not read " .. path
 			elseif #content > MAX_BYTES then
-				state.err = "HTML Preview: file too large (" .. tostring(#content) .. " bytes; limit 2 MiB)"
+				state.err = "HTML Preview: file too large (" .. tostring(#content) .. " bytes; limit 4 MiB)"
 			else
-				local okp, nodes = pcall(parse, content)
+				local okp, nodes, stopped = pcall(parse, content)
 				if okp then
 					state.nodes = nodes
+					state.truncated = stopped == true
 				else
 					state.err = "HTML Preview: parse error"
 				end
@@ -154,6 +169,9 @@ local block = {
 			return { main = ui.col({ ui.text({ ui.span(state.err, "error") }) }) }
 		end
 		local content: { any } = {}
+		if state.truncated then
+			content[#content + 1] = ui.text({ ui.span("… truncated at " .. MAX_NODES .. " elements", "warning") })
+		end
 		for _, node in ipairs(state.nodes or {}) do
 			content[#content + 1] = toEl(node)
 		end
