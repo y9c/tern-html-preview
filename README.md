@@ -1,55 +1,57 @@
 # HTML Preview (tern-html-preview)
 
-Render `.html`/`.htm`/`.xhtml` files in a Tern **browser block**, instead of
-opening them as plain syntax-highlighted source.
+Render `.html`/`.htm`/`.xhtml` files in a Tern block using Tern's **native
+`el` HTML elements** — a structural view (headings, paragraphs, lists,
+tables, code, strong/em), read and rendered by the host half. No browser
+block, no HTTP server, no LibreOffice.
 
 ## Install
 
 ```sh
-tern plugin install github.com/YOUR_USER/tern-html-preview
+tern plugin install github.com/y9c/tern-html-preview
 # or, while developing:
-tern plugin link /path/to/tern-html-preview
+tern plugin link /tmp/tern-html-preview
 ```
 
 ## Use
 
 Right-click an `.html` (or `.htm`/`.xhtml`) file in the Files pane and pick
-**Open with › HTML Preview**. Tern starts the block, reads the file, and opens
-a browser block rendering it as a page. The block pane shows a status line
-with the path and byte count.
+**Open with › HTML Preview**. Tern reads the file and draws it as native
+`el` elements in a block.
 
-## How it works
+## Why `el` (native, remote-capable)
 
-- `host.luau` defines a `render` block that takes over `*.html`/`*.htm`
-  (manifest `files`).
-- On start it reads the file with `tern.fs.read`, base64-encodes it, and
-  calls `cx:open("data:text/html;base64,…")` — Tern's browser block renders
-  `data:` URLs, so **no temp file and no separate download step**.
-
-## Remote hosts
-
-For HTML files on a **remote** session: the block runs on the file's host, so
-**install the plugin on that remote host too**:
-
-```sh
-# in a pane on the remote host:
-tern plugin install github.com/YOUR_USER/tern-html-preview
-```
-
-Without it there, a routed open shows only an error toast.
+- Tern's `el` draws real HTML tags inside Tern's own pane, so the view is
+  rendered natively (not via a browser block or a served URL).
+- The block is defined in the host half, so a **remote** file is read on its
+  own host (like `jsonx` reads remote JSON) — no HTTP server, no download.
+- `el` supports a fixed tag list; `text` becomes child text nodes.
 
 ## Known limits
 
-- Tern's browser block **does not load remote sub-resources** (images, JS,
-  CSS fetched from other hosts) — inline/same-page resources still work.
-- The `data:`-URL browser-block path is the part that needs a run in your
-  Tern to confirm (I could not run Tern here).
+- **Structural, not a faithful webpage**: Tern's `el` has **no** `<img>`,
+  `<a>`, `<textarea>` or `<select>`; `style`, `id`, `src`, `onclick` are
+  ignored; no JavaScript runs. So images, links, inline CSS and scripts are
+  dropped (link text is kept as plain text; images are omitted).
+- Best-effort walk: entities (`&amp;`) are not decoded; malformed HTML can
+  mis-nest. Swap in a real parser if you need faithful output.
+- Files over 2 MiB are refused rather than streamed.
+
+## Remote hosts
+
+The block runs on the file's host (host half), so **remote files need the
+plugin installed on that remote host too**:
+
+```sh
+# in a pane on the remote host:
+tern plugin install github.com/y9c/tern-html-preview
+```
+
+Without it there, an open shows only an error toast.
 
 ## Why not Rust
-The Tern plugin **must be Luau** (`host.luau`/`window.luau`); a Rust binary
-can only be an extra helper called via `tern.process.run`. For HTML the
-rendering is already done by Tern's WebView-backed browser block, so a Rust
-aid adds no rendering performance and forces users to build/install it
-before `tern plugin install` works. If you later want a Rust helper (e.g.
-HTML→text or a screenshot renderer), it would be a separate `cargo` binary
-called from the block.
+
+The Tern plugin **must be Luau**; a Rust binary can only be an extra helper
+called via `tern.process.run`. For native HTML structure rendering (`el`)
+neither a browser nor a server is involved, so Rust adds no rendering
+benefit here.

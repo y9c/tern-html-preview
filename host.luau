@@ -1,83 +1,146 @@
 --!strict
--- The `render` block: renders an HTML file in a Tern browser block.
+-- Render an HTML file as native Tern elements (`el`) in the block.
 --
--- The file path arrives as the block's first launch argument ("Open with
--- › HTML Preview", matched by the manifest `files` globs), with `cx.cwd`
--- set to the file's folder.
---
--- Design: read the file (on the host that owns it — local, or the remote
--- host for a remote pane), then open it in a browser block via a `data:`
--- URL. Tern's browser block renders `data:` URLs, so the content crosses
--- from a possibly-remote host to the local window that draws it, with no
--- temp file and no separate download step.
+-- Why `el`: it draws real HTML tags inside Tern's own pane, so the view is
+-- native and the content is read by the HOST half — a remote file is read on
+-- its own host (like jsonx), so remote works with no HTTP server and no
+-- browser block. Tern's `el` allows a fixed tag list and no
+-- <img>/<a>/inline CSS/JS, so this is a STRUCTURAL view (headings,
+-- paragraphs, lists, tables, code, strong/em), not a faithful webpage.
 
 local ui = tern.ui
 local fs = tern.fs
 
-local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
--- Standard base64 for a byte string (padded). Luau supports bitwise ops.
-local function base64(s: string): string
-	local chunks: { string } = {}
-	local i = 1
-	local len = #s
-	while i <= len do
-		local b1 = string.byte(s, i)
-		local b2 = string.byte(s, i + 1) or 0
-		local b3 = string.byte(s, i + 2) or 0
-		-- 6-bit groups via integer division and modulo (no bitwise ops,
-		-- which some Luau builds reject).
-		local c1 = (b1 // 4) + 1
-		local c2 = ((b1 % 4) * 16 + b2 // 16) + 1
-		local c3 = ((b2 % 16) * 4 + b3 // 64) + 1
-		local c4 = (b3 % 64) + 1
-		local part = B64:sub(c1, c1) .. B64:sub(c2, c2)
-		part = part .. (if i + 1 <= len then B64:sub(c3, c3) else "=")
-		part = part .. (if i + 2 <= len then B64:sub(c4, c4) else "=")
-		chunks[#chunks + 1] = part
-		i = i + 3
-	end
-	return table.concat(chunks)
-end
-
-type State = {
-	path: string,
-	err: string?,
-	bytes: number?,
+-- Tags we drop as noise (their text is kept when it reaches the parent).
+local SKIP: { [string]: boolean } = {
+	script = true,
+	style = true,
+	head = true,
+	template = true,
+	noscript = true,
+	title = true,
+	meta = true,
+	link = true,
+	img = true,
+	a = true,
+	input = true,
+	textarea = true,
+	select = true,
+	button = true,
+	form = true,
 }
 
--- Resolve args[1] against `cx.cwd` when it is relative (`tern.fs` resolves
--- relative paths against the plugin's own folder, not the pane's).
-local function resolve(path: string, cwd: string?): string
-	if path == "" then
-		return path
+type N = {
+	tag: string?,
+	text: string,
+	children: { N },
+}
+
+-- Best-effort HTML walk for v0.1. Text becomes child nodes (order kept);
+-- whitespace-only text is dropped; unsupported tags are skipped (their text
+-- accumulates on the parent). Entities are not decoded.
+local function parse(body: string): { N }
+	local roots: { N } = {}
+	local stack: { N } = {}
+
+	local function push(node: N)
+		if #stack > 0 then
+			stack[#stack].children[#stack[#stack].children + 1] = node
+		else
+			roots[#roots + 1] = node
+		end
 	end
-	if path:sub(1, 1) == "/" or path:match("^%a:/") then
-		return path
+
+	local function textNode(txt: string)
+		if #txt > 0 and txt:match("%S") then -- drop whitespace-only
+			push({ tag = nil, text = txt, children = {} })
+		end
 	end
-	if cwd and cwd ~= "" then
-		return cwd .. "/" .. path
+
+	local i = 1
+	local n = #body
+	while i <= n do
+		local lt = string.find(body, "<", i, true)
+		if not lt then
+			textNode(body:sub(i))
+			break
+		end
+		if lt > i then
+			textNode(body:sub(i, lt - 1))
+		end
+		local gt = string.find(body, ">", lt, true)
+		if not gt then
+			textNode(body:sub(lt))
+			break
+		end
+		local raw = body:sub(lt, gt)
+		i = gt + 1
+		local isClose = string.sub(raw, 2, 2) == "/"
+		local name = string.match(raw, "^%s*<?/?(%a[%w%-]*)")
+		if name then
+			name = string.lower(name)
+			if isClose then
+				-- pop to the nearest matching open tag
+				for idx = #stack, 1, -1 do
+					if stack[idx].tag == name then
+						while #stack >= idx do
+							table.remove(stack)
+						end
+						break
+					end
+				end
+			else
+				local selfClose = string.match(raw, "/%s*>%s*$") ~= nil
+				if not SKIP[name] then
+					local node: N = { tag = name, text = "", children = {} }
+					push(node)
+					if not selfClose and name ~= "br" and name ~= "hr" then
+						stack[#stack + 1] = node
+					end
+				end
+			end
+		end
 	end
-	return path
+	return roots
 end
+
+-- Convert a parsed node to an `el`/`text` node.
+local function toEl(node: N): any
+	if node.tag == nil then
+		return ui.text({ node.text })
+	end
+	local children: { any } = {}
+	for _, c in ipairs(node.children) do
+		children[#children + 1] = toEl(c)
+	end
+	return ui.el(node.tag, {}, children)
+end
+
+local MAX_BYTES = 2 * 1024 * 1024
+
+type State = { path: string, nodes: { N }?, err: string? }
 
 local block = {
 	init = function(cx, args, _saved)
-		local path = resolve(args[1] or "", cx.cwd)
-		local state: State = {
-			path = path,
-			err = nil,
-			bytes = nil,
-		}
-
-		local ok, content = pcall(fs.read, path)
-		if ok and type(content) == "string" then
-			state.bytes = #content
-			-- Open the content in a browser block as a data: URL.
-			local url = "data:text/html;base64," .. base64(content)
-			cx:open(url)
-		else
-			state.err = "HTML Preview: could not read " .. path
+		local path = args[1] or ""
+		local state: State = { path = path, nodes = nil, err = nil }
+		if path == "" then
+			state.err = "HTML Preview: no file given"
+		end
+		if not state.err then
+			local ok, content = pcall(fs.read, path)
+			if not ok then
+				state.err = "HTML Preview: could not read " .. path
+			elseif #content > MAX_BYTES then
+				state.err = "HTML Preview: file too large (" .. tostring(#content) .. " bytes; limit 2 MiB)"
+			else
+				local okp, nodes = pcall(parse, content)
+				if okp then
+					state.nodes = nodes
+				else
+					state.err = "HTML Preview: parse error"
+				end
+			end
 		end
 		return state
 	end,
@@ -90,12 +153,14 @@ local block = {
 		if state.err then
 			return { main = ui.col({ ui.text({ ui.span(state.err, "error") }) }) }
 		end
-		return {
-			main = ui.col({
-				ui.text({ ui.span("Rendered as a browser block", "success") }),
-				ui.text({ ui.span(state.path .. "  (" .. tostring(state.bytes or 0) .. " bytes)", "muted") }),
-			}),
-		}
+		local content: { any } = {}
+		for _, node in ipairs(state.nodes or {}) do
+			content[#content + 1] = toEl(node)
+		end
+		if #content == 0 then
+			return { main = ui.col({ ui.text({ ui.span("(empty or unsupported HTML)", "muted") }) }) }
+		end
+		return { main = ui.col(content) }
 	end,
 }
 
